@@ -14,60 +14,30 @@ def get_supabase():
 
 supabase = get_supabase()
 
-REGION_MAP = {
-    "🇺🇸 미국 (US)":        "US_DB",
-    "🇦🇪 UAE":              "UAE_DB",
-    "🌏 동남아 (MY/SG/PH)":  "my_sg_ph_DB",
-}
-
-RENAME_MAP = {
-    'influencer_ID':  'ID',
-    'platform':       '플랫폼',
-    'followers':      '팔로워',
-    'likes':          '좋아요',
-    'likes_comments': '좋아요·댓글',
-    'views':          '조회수',
-    'saves':          '저장',
-    'VideoUrl_TT':    'TikTok URL',
-    'VideoUrl_IG':    'Instagram URL',
-}
-
 # ── 사이드바 ──────────────────────────────────
 st.sidebar.title("💄 KOC 필터")
 st.sidebar.markdown("---")
-region_label   = st.sidebar.selectbox("🌍 지역 선택", list(REGION_MAP.keys()))
 platform_label = st.sidebar.selectbox("📱 플랫폼", ["전체", "Tiktok", "Instagram"])
-limit          = st.sidebar.slider("표시 개수", 10, 100, 30, 10)
+limit          = st.sidebar.slider("표시 개수", 100, 5000, 1000, 100)
 search_btn     = st.sidebar.button("🔍 검색", use_container_width=True)
 
 # ── 메인 ──────────────────────────────────────
 st.title("💄 뷰티 인플루언서 데이터")
-st.caption("Supabase 실시간 연결 · 필터링")
+st.caption("미국 KOC · 컨텐츠 URL + 인게이지먼트")
 
-def fetch_us_data(platform_label, limit):
-    """US_DB — VideoUrl이 실제로 있는 것만"""
+RENAME_MAP = {
+    'influencer_ID': 'ID',
+    'platform':      '플랫폼',
+    'likes':         '좋아요',
+    'views':         '조회수',
+    'saves':         '저장',
+    'VideoUrl_TT':   'TikTok URL',
+    'VideoUrl_IG':   'Instagram URL',
+}
+
+def fetch_data(platform_label, limit):
     try:
-        query = supabase.table('US_DB') \
-            .select('influencer_ID, platform, likes, views, saves, VideoUrl_TT, VideoUrl_IG') \
-            .not_.is_('VideoUrl_TT', None) \
-            .neq('VideoUrl_TT', 'NULL') \
-            .neq('VideoUrl_TT', 'error') \
-            .neq('VideoUrl_TT', 'x') \
-            .neq('VideoUrl_TT', '')
-
-        if platform_label != "전체":
-            query = query.eq('platform', platform_label)
-
-        result = query.limit(limit).execute()
-        return result.data, None
-    except Exception as e:
-        return None, str(e)
-
-def fetch_other_data(table_name, platform_label, limit):
-    """UAE_DB, my_sg_ph_DB"""
-    try:
-        query = supabase.table(table_name) \
-            .select('influencer_ID, platform, followers, likes_comments, views, saves')
+        query = supabase.table('koc_contents_view').select('*')
 
         if platform_label != "전체":
             query = query.eq('platform', platform_label)
@@ -79,24 +49,18 @@ def fetch_other_data(table_name, platform_label, limit):
 
 # ── 검색 실행 ─────────────────────────────────
 if search_btn:
-    table_name = REGION_MAP[region_label]
-
-    with st.spinner(f"{region_label} 데이터 불러오는 중..."):
-        if table_name == 'US_DB':
-            data, error = fetch_us_data(platform_label, limit)
-        else:
-            data, error = fetch_other_data(table_name, platform_label, limit)
+    with st.spinner("데이터 불러오는 중..."):
+        data, error = fetch_data(platform_label, limit)
 
     if error:
         st.error(f"오류: {error}")
         st.session_state['data'] = []
     elif data and len(data) > 0:
         st.session_state['data'] = data
-        st.session_state['region_label'] = region_label
         st.session_state['platform'] = platform_label
-        st.success(f"✅ {len(data)}개 데이터 로드 완료!")
+        st.success(f"✅ {len(data)}개 로드 완료!")
     else:
-        st.warning("조건에 맞는 데이터가 없습니다.")
+        st.warning("데이터가 없습니다.")
         st.session_state['data'] = []
 
 # ── 결과 출력 ─────────────────────────────────
@@ -104,9 +68,9 @@ if 'data' in st.session_state and st.session_state['data']:
     data = st.session_state['data']
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("검색 결과", f"{len(data)}명")
-    c2.metric("지역", st.session_state.get('region_label', ''))
-    c3.metric("플랫폼", st.session_state.get('platform', '전체'))
+    c1.metric("검색 결과", f"{len(data)}개")
+    c2.metric("플랫폼", st.session_state.get('platform', '전체'))
+    c3.metric("전체 보유", "1,800개")
 
     st.markdown("---")
 
@@ -125,16 +89,21 @@ if 'data' in st.session_state and st.session_state['data']:
                     st.markdown(f"**@{inf.get('influencer_ID', 'N/A')}**")
                     st.caption(f"📱 {inf.get('platform', 'N/A')}")
                     st.markdown(f"👀 조회수 `{inf.get('views', 'N/A')}`")
-                    likes = inf.get('likes') or inf.get('likes_comments', 'N/A')
-                    st.markdown(f"❤️ 좋아요 `{likes}`")
+                    st.markdown(f"❤️ 좋아요 `{inf.get('likes', 'N/A')}`")
                     st.markdown(f"🔖 저장 `{inf.get('saves', 'N/A')}`")
-                    tt = inf.get('VideoUrl_TT')
-                    ig = inf.get('VideoUrl_IG')
-                    if tt and tt not in ['NULL','error','x','']:
+                    tt = inf.get('VideoUrl_TT', '')
+                    ig = inf.get('VideoUrl_IG', '')
+                    if tt:
                         st.markdown(f"[🎵 TikTok]({tt})")
-                    if ig and ig not in ['NULL','error','x','']:
+                    if ig:
                         st.markdown(f"[📸 Instagram]({ig})")
 
 else:
     st.markdown("---")
     st.info("👈 왼쪽 필터 설정 후 검색 버튼을 눌러주세요.")
+    st.markdown("""
+    **데이터 구성**
+    - 미국 KOC 1,800개
+    - 컨텐츠 URL + 인게이지먼트 보유
+    - TikTok / Instagram 필터 가능
+    """)
