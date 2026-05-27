@@ -32,9 +32,13 @@ st.caption("Supabase 실시간 연결 · 필터링")
 
 def fetch_data(table_name, platform, limit):
     try:
-        query = supabase.table(table_name).select(
-            'influencer_ID, platform, followers, views, likes_comments, save, share'
-        )
+        # 테이블별 컬럼이 달라서 분기처리
+        if table_name == 'US_DB':
+            columns = 'influencer_ID, platform, followers, likes, views, saves, VideoUrl_TT, VideoUrl_IG'
+        else:
+            columns = 'influencer_ID, platform, followers, likes_comments, views, saves'
+
+        query = supabase.table(table_name).select(columns)
         if platform != "전체":
             query = query.ilike('platform', f'%{platform}%')
         result = query.limit(limit).execute()
