@@ -5,7 +5,6 @@ import pandas as pd
 
 st.set_page_config(page_title="뷰티 인플루언서 데이터", page_icon="💄", layout="wide")
 
-# ── Supabase 연결 ─────────────────────────────
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
 
@@ -15,11 +14,10 @@ def get_supabase():
 
 supabase = get_supabase()
 
-# ── 테이블별 실제 컬럼 정의 ───────────────────
 TABLE_COLUMNS = {
-    'US_DB':        'influencer_ID, platform, followers, likes, views, saves, VideoUrl_TT, VideoUrl_IG',
-    'UAE_DB':       'influencer_ID, platform, followers, likes_comments, views, saves',
-    'my_sg_ph_DB':  'influencer_ID, platform, followers, likes_comments, views, saves',
+    'US_DB':       'influencer_ID, platform, likes, views, saves, VideoUrl_TT, VideoUrl_IG',
+    'UAE_DB':      'influencer_ID, platform, followers, likes_comments, views, saves',
+    'my_sg_ph_DB': 'influencer_ID, platform, followers, likes_comments, views, saves',
 }
 
 REGION_MAP = {
@@ -44,22 +42,39 @@ RENAME_MAP = {
 st.sidebar.title("💄 KOC 필터")
 st.sidebar.markdown("---")
 region_label    = st.sidebar.selectbox("🌍 지역 선택", list(REGION_MAP.keys()))
-platform_filter = st.sidebar.selectbox("📱 플랫폼", ["전체", "Tiktok", "Instagram", "YouTube", "X"])
+
+# 플랫폼 옵션 — DB 실제 값 기준
+platform_options = {
+    "전체": None,
+    "Tiktok": "Tiktok",
+    "Instagram": "Instagram",
+    "YouTube": "YouTube",
+    "X": "X",
+}
+platform_label  = st.sidebar.selectbox("📱 플랫폼", list(platform_options.keys()))
 limit           = st.sidebar.slider("표시 개수", 10, 100, 30, 10)
+
+# VideoUrl 있는 것만 필터
+only_with_url   = st.sidebar.checkbox("📹 컨텐츠 URL 있는 것만", value=True)
+
 search_btn      = st.sidebar.button("🔍 검색", use_container_width=True)
 
 # ── 메인 ──────────────────────────────────────
 st.title("💄 뷰티 인플루언서 데이터")
 st.caption("Supabase 실시간 연결 · 필터링")
 
-# ── 데이터 조회 ───────────────────────────────
-def fetch_data(table_name, platform, limit):
+def fetch_data(table_name, platform_val, only_url, limit):
     try:
         columns = TABLE_COLUMNS.get(table_name, '*')
         query = supabase.table(table_name).select(columns)
 
-        if platform != "전체":
-            query = query.ilike('platform', f'%{platform}%')
+        # 플랫폼 필터 (정확한 값으로 매칭)
+        if platform_val:
+            query = query.eq('platform', platform_val)
+
+        # VideoUrl 있는 것만 (US_DB만 해당)
+        if only_url and table_name == 'US_DB':
+            query = query.not_.is_('VideoUrl_TT', 'null')
 
         result = query.limit(limit).execute()
         return result.data, None
@@ -68,9 +83,11 @@ def fetch_data(table_name, platform, limit):
 
 # ── 검색 실행 ─────────────────────────────────
 if search_btn:
-    table_name = REGION_MAP[region_label]
+    table_name   = REGION_MAP[region_label]
+    platform_val = platform_options[platform_label]
+
     with st.spinner(f"{region_label} 데이터 불러오는 중..."):
-        data, error = fetch_data(table_name, platform_filter, limit)
+        data, error = fetch_data(table_name, platform_val, only_with_url, limit)
 
     if error:
         st.error(f"오류: {error}")
@@ -78,10 +95,11 @@ if search_btn:
     elif data and len(data) > 0:
         st.session_state['data'] = data
         st.session_state['region_label'] = region_label
-        st.session_state['platform'] = platform_filter
+        st.session_state['platform'] = platform_label
         st.session_state['table_name'] = table_name
+        st.success(f"{len(data)}개 데이터 로드 완료!")
     else:
-        st.warning(f"데이터가 없습니다. 플랫폼 필터를 '전체'로 바꿔서 다시 검색해보세요.")
+        st.warning("조건에 맞는 데이터가 없습니다. 필터를 조정해보세요.")
         st.session_state['data'] = []
 
 # ── 결과 출력 ─────────────────────────────────
@@ -109,18 +127,17 @@ if 'data' in st.session_state and st.session_state['data']:
                 with st.container(border=True):
                     st.markdown(f"**@{inf.get('influencer_ID', 'N/A')}**")
                     st.caption(f"📱 {inf.get('platform', 'N/A')}")
-                    st.markdown(f"👥 팔로워 `{inf.get('followers', 'N/A')}`")
                     st.markdown(f"👀 조회수 `{inf.get('views', 'N/A')}`")
                     likes = inf.get('likes') or inf.get('likes_comments', 'N/A')
                     st.markdown(f"❤️ 좋아요 `{likes}`")
                     st.markdown(f"🔖 저장 `{inf.get('saves', 'N/A')}`")
+                    tt_url = inf.get('VideoUrl_TT')
+                    ig_url = inf.get('VideoUrl_IG')
+                    if tt_url and tt_url not in ['NULL', 'error', 'x']:
+                        st.markdown(f"[🎵 TikTok 영상]({tt_url})")
+                    if ig_url and ig_url not in ['NULL', 'error', 'x']:
+                        st.markdown(f"[📸 Instagram 영상]({ig_url})")
 
 else:
     st.markdown("---")
     st.info("👈 왼쪽 필터 설정 후 검색 버튼을 눌러주세요.")
-    st.markdown("""
-    **사용 방법**
-    1. 지역 선택 (미국 / UAE / 동남아)
-    2. 플랫폼 선택 — **일단 '전체'로 먼저 검색해보세요**
-    3. 검색 버튼 클릭
-    """)
