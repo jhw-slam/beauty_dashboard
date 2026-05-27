@@ -14,12 +14,6 @@ def get_supabase():
 
 supabase = get_supabase()
 
-TABLE_COLUMNS = {
-    'US_DB':       'influencer_ID, platform, likes, views, saves, VideoUrl_TT, VideoUrl_IG',
-    'UAE_DB':      'influencer_ID, platform, followers, likes_comments, views, saves',
-    'my_sg_ph_DB': 'influencer_ID, platform, followers, likes_comments, views, saves',
-}
-
 REGION_MAP = {
     "🇺🇸 미국 (US)":        "US_DB",
     "🇦🇪 UAE":              "UAE_DB",
@@ -41,40 +35,42 @@ RENAME_MAP = {
 # ── 사이드바 ──────────────────────────────────
 st.sidebar.title("💄 KOC 필터")
 st.sidebar.markdown("---")
-region_label    = st.sidebar.selectbox("🌍 지역 선택", list(REGION_MAP.keys()))
-
-# 플랫폼 옵션 — DB 실제 값 기준
-platform_options = {
-    "전체": None,
-    "Tiktok": "Tiktok",
-    "Instagram": "Instagram",
-    "YouTube": "YouTube",
-    "X": "X",
-}
-platform_label  = st.sidebar.selectbox("📱 플랫폼", list(platform_options.keys()))
-limit           = st.sidebar.slider("표시 개수", 10, 100, 30, 10)
-
-# VideoUrl 있는 것만 필터
-only_with_url   = st.sidebar.checkbox("📹 컨텐츠 URL 있는 것만", value=True)
-
-search_btn      = st.sidebar.button("🔍 검색", use_container_width=True)
+region_label   = st.sidebar.selectbox("🌍 지역 선택", list(REGION_MAP.keys()))
+platform_label = st.sidebar.selectbox("📱 플랫폼", ["전체", "Tiktok", "Instagram"])
+limit          = st.sidebar.slider("표시 개수", 10, 100, 30, 10)
+search_btn     = st.sidebar.button("🔍 검색", use_container_width=True)
 
 # ── 메인 ──────────────────────────────────────
 st.title("💄 뷰티 인플루언서 데이터")
 st.caption("Supabase 실시간 연결 · 필터링")
 
-def fetch_data(table_name, platform_val, only_url, limit):
+def fetch_us_data(platform_label, limit):
+    """US_DB — VideoUrl이 실제로 있는 것만"""
     try:
-        columns = TABLE_COLUMNS.get(table_name, '*')
-        query = supabase.table(table_name).select(columns)
+        query = supabase.table('US_DB') \
+            .select('influencer_ID, platform, likes, views, saves, VideoUrl_TT, VideoUrl_IG') \
+            .not_.is_('VideoUrl_TT', None) \
+            .neq('VideoUrl_TT', 'NULL') \
+            .neq('VideoUrl_TT', 'error') \
+            .neq('VideoUrl_TT', 'x') \
+            .neq('VideoUrl_TT', '')
 
-        # 플랫폼 필터 (정확한 값으로 매칭)
-        if platform_val:
-            query = query.eq('platform', platform_val)
+        if platform_label != "전체":
+            query = query.eq('platform', platform_label)
 
-        # VideoUrl 있는 것만 (US_DB만 해당)
-        if only_url and table_name == 'US_DB':
-            query = query.not_.is_('VideoUrl_TT', 'null')
+        result = query.limit(limit).execute()
+        return result.data, None
+    except Exception as e:
+        return None, str(e)
+
+def fetch_other_data(table_name, platform_label, limit):
+    """UAE_DB, my_sg_ph_DB"""
+    try:
+        query = supabase.table(table_name) \
+            .select('influencer_ID, platform, followers, likes_comments, views, saves')
+
+        if platform_label != "전체":
+            query = query.eq('platform', platform_label)
 
         result = query.limit(limit).execute()
         return result.data, None
@@ -83,11 +79,13 @@ def fetch_data(table_name, platform_val, only_url, limit):
 
 # ── 검색 실행 ─────────────────────────────────
 if search_btn:
-    table_name   = REGION_MAP[region_label]
-    platform_val = platform_options[platform_label]
+    table_name = REGION_MAP[region_label]
 
     with st.spinner(f"{region_label} 데이터 불러오는 중..."):
-        data, error = fetch_data(table_name, platform_val, only_with_url, limit)
+        if table_name == 'US_DB':
+            data, error = fetch_us_data(platform_label, limit)
+        else:
+            data, error = fetch_other_data(table_name, platform_label, limit)
 
     if error:
         st.error(f"오류: {error}")
@@ -96,10 +94,9 @@ if search_btn:
         st.session_state['data'] = data
         st.session_state['region_label'] = region_label
         st.session_state['platform'] = platform_label
-        st.session_state['table_name'] = table_name
-        st.success(f"{len(data)}개 데이터 로드 완료!")
+        st.success(f"✅ {len(data)}개 데이터 로드 완료!")
     else:
-        st.warning("조건에 맞는 데이터가 없습니다. 필터를 조정해보세요.")
+        st.warning("조건에 맞는 데이터가 없습니다.")
         st.session_state['data'] = []
 
 # ── 결과 출력 ─────────────────────────────────
@@ -131,12 +128,12 @@ if 'data' in st.session_state and st.session_state['data']:
                     likes = inf.get('likes') or inf.get('likes_comments', 'N/A')
                     st.markdown(f"❤️ 좋아요 `{likes}`")
                     st.markdown(f"🔖 저장 `{inf.get('saves', 'N/A')}`")
-                    tt_url = inf.get('VideoUrl_TT')
-                    ig_url = inf.get('VideoUrl_IG')
-                    if tt_url and tt_url not in ['NULL', 'error', 'x']:
-                        st.markdown(f"[🎵 TikTok 영상]({tt_url})")
-                    if ig_url and ig_url not in ['NULL', 'error', 'x']:
-                        st.markdown(f"[📸 Instagram 영상]({ig_url})")
+                    tt = inf.get('VideoUrl_TT')
+                    ig = inf.get('VideoUrl_IG')
+                    if tt and tt not in ['NULL','error','x','']:
+                        st.markdown(f"[🎵 TikTok]({tt})")
+                    if ig and ig not in ['NULL','error','x','']:
+                        st.markdown(f"[📸 Instagram]({ig})")
 
 else:
     st.markdown("---")
