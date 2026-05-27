@@ -71,11 +71,17 @@ if 'data' in st.session_state and st.session_state['data']:
     tab1, tab2 = st.tabs(["📋 테이블 뷰", "🃏 카드 뷰"])
     with tab1:
         df = pd.DataFrame(data)
-        rename = {
-            'influencer_ID': 'ID', 'platform': '플랫폼',
-            'followers': '팔로워', 'views': '조회수',
-            'likes_comments': '좋아요·댓글', 'save': '저장', 'share': '공유',
-        }
+rename = {
+    'influencer_ID':  'ID',
+    'platform':       '플랫폼',
+    'followers':      '팔로워',
+    'likes':          '좋아요',
+    'likes_comments': '좋아요·댓글',
+    'views':          '조회수',
+    'saves':          '저장',
+    'VideoUrl_TT':    'TikTok URL',
+    'VideoUrl_IG':    'Instagram URL',
+}
         df = df.rename(columns={k: v for k, v in rename.items() if k in df.columns})
         st.dataframe(df, use_container_width=True, height=600)
     with tab2:
