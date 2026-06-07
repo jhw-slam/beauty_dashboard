@@ -1,199 +1,250 @@
+"""
+Slam-Global · KOC 뷰어 (STEP 4 - 뷰어 기반)
+-------------------------------------------------
+- 여러 데이터 소스(영상 URL 있는 DB)를 드롭다운으로 선택
+- 리스트 보기(빠름) ↔ 썸네일 보기 전환
+- 썸네일 URL 있으면 이미지, 없으면 플레이스홀더로 폴백
+- 로그인 / 좋아요 / 댓글 기능은 다음 단계에서 추가 예정
+"""
+
 import os
+import math
+import pandas as pd
 import streamlit as st
 from supabase import create_client
-import pandas as pd
 
-st.set_page_config(page_title="뷰티 인플루언서 데이터", page_icon="💄", layout="wide")
+st.set_page_config(page_title="Slam-Global KOC 뷰어", page_icon="💄", layout="wide")
 
-SUPABASE_URL = os.environ.get('SUPABASE_URL')
-SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
+# ── Supabase 연결 ──────────────────────────────
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+
 
 @st.cache_resource
 def get_supabase():
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
+
 supabase = get_supabase()
 
-# ── 사이드바 필터 ──────────────────────────────
-st.sidebar.title("💄 KOC 필터")
-st.sidebar.markdown("---")
-
-platform_label = st.sidebar.selectbox("📱 플랫폼", ["전체", "Tiktok", "Instagram"])
-
-st.sidebar.markdown("**❤️ 좋아요 최소**")
-min_likes = st.sidebar.number_input("좋아요", min_value=0, value=0, step=10, label_visibility="collapsed")
-
-st.sidebar.markdown("**👀 조회수 최소**")
-min_views = st.sidebar.number_input("조회수", min_value=0, value=0, step=100, label_visibility="collapsed")
-
-st.sidebar.markdown("**🔖 저장 최소**")
-min_saves = st.sidebar.number_input("저장", min_value=0, value=0, step=5, label_visibility="collapsed")
-
-st.sidebar.markdown("**정렬 기준**")
-sort_col = st.sidebar.selectbox("정렬", ["views", "likes", "saves"], format_func=lambda x: {"views":"조회수","likes":"좋아요","saves":"저장"}[x])
-sort_desc = st.sidebar.radio("순서", ["높은순", "낮은순"]) == "높은순"
-
-search_btn = st.sidebar.button("🔍 검색", use_container_width=True)
-
-# ── 메인 ──────────────────────────────────────
-st.title("💄 뷰티 인플루언서 데이터")
-st.caption("미국 KOC · 컨텐츠 URL + 인게이지먼트")
-
-RENAME_MAP = {
-    'influencer_ID': 'ID',
-    'platform':      '플랫폼',
-    'likes':         '좋아요',
-    'views':         '조회수',
-    'saves':         '저장',
-    'VideoUrl_TT':   'TikTok URL',
-    'VideoUrl_IG':   'Instagram URL',
+# ── 데이터 소스 정의 ───────────────────────────
+# 각 소스마다 테이블/컬럼이 다르므로 매핑을 한곳에 모아둔다.
+SOURCES = {
+    "🇺🇸 US · KOC 영상 (9,490)": {
+        "table": "koc_contents",
+        "id_col": "influencer_id",
+        "video_col": "video_url",
+        "thumb_col": "thumbnail_url",
+        "metrics": {
+            "조회수": "play_count",
+            "좋아요": "like_count",
+            "댓글": "comment_count",
+            "공유": "share_count",
+            "저장": "save_count",
+        },
+        "date_col": "posted_at",
+        "caption_col": "caption",
+        "platform": "TikTok",
+        "video_filter": ("video_url", "http%"),
+    },
+    "🇺🇸 US · TOP 영상 (1,342)": {
+        "table": "top_contents",
+        "id_col": "influencer_ID",
+        "video_col": "video_url",
+        "thumb_col": "thumbnail_url",
+        "metrics": {"조회수": "views", "좋아요": "likes", "댓글": "comments", "저장": "saves"},
+        "date_col": "posted_at",
+        "caption_col": "title",
+        "platform": "TikTok",
+        "video_filter": ("video_url", "http%"),
+    },
+    "🇺🇸 US · 인플루언서 TikTok (1,876)": {
+        "table": "US_DB",
+        "id_col": "influencer_ID",
+        "video_col": "VideoUrl_TT",
+        "thumb_col": None,
+        "metrics": {"조회수": "views", "좋아요": "likes", "저장": "saves"},
+        "date_col": "date",
+        "caption_col": None,
+        "platform": "TikTok",
+        "video_filter": ("VideoUrl_TT", "http%"),
+    },
+    "🇺🇸 US · 인플루언서 Instagram (618)": {
+        "table": "US_DB",
+        "id_col": "influencer_ID",
+        "video_col": "VideoUrl_IG",
+        "thumb_col": None,
+        "metrics": {"조회수": "views", "좋아요": "likes", "저장": "saves"},
+        "date_col": "date",
+        "caption_col": None,
+        "platform": "Instagram",
+        "video_filter": ("VideoUrl_IG", "http%"),
+    },
+    "🇯🇵 JP · 인플루언서 TikTok (1,924)": {
+        "table": "JP_DB",
+        "id_col": "name",
+        "video_col": "tiktok_url",
+        "thumb_col": None,
+        "metrics": {"팔로워": "tiktok_followers", "ER%": "engagement_rate"},
+        "date_col": "created_at",
+        "caption_col": None,
+        "platform": "TikTok",
+        "video_filter": ("tiktok_url", "http%"),
+    },
 }
 
-def fetch_all_data(platform_label):
-    """전체 데이터 페이지네이션으로 가져오기"""
-    try:
-        all_data = []
-        page_size = 1000
-        offset = 0
 
-        while True:
-            query = supabase.table('koc_contents_view').select('*')
-            if platform_label != "전체":
-                query = query.eq('platform', platform_label)
-            result = query.range(offset, offset + page_size - 1).execute()
+# ── 데이터 조회 ────────────────────────────────
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_source(source_key: str) -> pd.DataFrame:
+    """선택한 소스의 영상 URL 있는 행을 페이지네이션으로 모두 가져와 정규화한다."""
+    cfg = SOURCES[source_key]
 
-            if not result.data:
-                break
-            all_data.extend(result.data)
-            if len(result.data) < page_size:
-                break
-            offset += page_size
+    cols = [cfg["id_col"], cfg["video_col"]]
+    if cfg["thumb_col"]:
+        cols.append(cfg["thumb_col"])
+    if cfg["date_col"]:
+        cols.append(cfg["date_col"])
+    if cfg["caption_col"]:
+        cols.append(cfg["caption_col"])
+    cols += list(cfg["metrics"].values())
+    select_str = ",".join(f'"{c}"' for c in dict.fromkeys(cols))
 
-        return all_data, None
-    except Exception as e:
-        return None, str(e)
+    rows, page, size = [], 0, 1000
+    while True:
+        q = supabase.table(cfg["table"]).select(select_str)
+        fcol, fpat = cfg["video_filter"]
+        q = q.like(fcol, fpat)
+        res = q.range(page * size, page * size + size - 1).execute()
+        if not res.data:
+            break
+        rows.extend(res.data)
+        if len(res.data) < size:
+            break
+        page += 1
 
-# ── 검색 실행 ─────────────────────────────────
-if search_btn:
-    with st.spinner("전체 데이터 불러오는 중... (잠시만요)"):
-        data, error = fetch_all_data(platform_label)
+    if not rows:
+        return pd.DataFrame()
 
-    if error:
-        st.error(f"오류: {error}")
-        st.session_state['data'] = []
-    elif data and len(data) > 0:
-        st.session_state['raw_data'] = data
-        st.session_state['platform'] = platform_label
-        st.success(f"✅ 총 {len(data)}개 로드 완료!")
-    else:
-        st.warning("데이터가 없습니다.")
-        st.session_state['raw_data'] = []
+    df = pd.DataFrame(rows)
 
-# ── 결과 출력 ─────────────────────────────────
-if 'raw_data' in st.session_state and st.session_state['raw_data']:
-    raw = st.session_state['raw_data']
-    df = pd.DataFrame(raw)
+    out = pd.DataFrame()
+    out["인플루언서"] = df[cfg["id_col"]].astype(str)
+    out["영상URL"] = df[cfg["video_col"]]
+    out["플랫폼"] = cfg["platform"]
+    out["썸네일"] = df[cfg["thumb_col"]] if cfg["thumb_col"] and cfg["thumb_col"] in df else None
+    if cfg["date_col"] and cfg["date_col"] in df:
+        out["날짜"] = pd.to_datetime(df[cfg["date_col"]], errors="coerce").dt.date.astype(str)
+    if cfg["caption_col"] and cfg["caption_col"] in df:
+        out["내용"] = df[cfg["caption_col"]].astype(str).str.slice(0, 80)
 
-    # 숫자 변환
-    for col in ['likes','views','saves']:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
+    for label, col in cfg["metrics"].items():
+        if col in df:
+            out[label] = pd.to_numeric(
+                df[col].astype(str).str.replace(",", "", regex=False), errors="coerce"
+            ).fillna(0)
+            if label != "ER%":
+                out[label] = out[label].astype("int64")
 
-    # 필터 적용
-    if min_likes > 0:
-        df = df[df['likes'] >= min_likes]
-    if min_views > 0:
-        df = df[df['views'] >= min_views]
-    if min_saves > 0:
-        df = df[df['saves'] >= min_saves]
+    return out
 
-    # 정렬
-    if sort_col in df.columns:
-        df = df.sort_values(sort_col, ascending=not sort_desc)
 
+# ── 사이드바 ───────────────────────────────────
+st.sidebar.title("💄 KOC 뷰어")
+st.sidebar.markdown("---")
+
+source_key = st.sidebar.selectbox("📂 데이터 소스", list(SOURCES.keys()))
+cfg = SOURCES[source_key]
+
+metric_labels = list(cfg["metrics"].keys())
+sort_label = st.sidebar.selectbox("정렬 기준", metric_labels) if metric_labels else None
+sort_desc = st.sidebar.radio("순서", ["높은순", "낮은순"], horizontal=True) == "높은순"
+
+min_val = 0
+if metric_labels:
+    primary = metric_labels[0]
+    min_val = st.sidebar.number_input(f"{primary} 최소", min_value=0, value=0, step=100)
+
+load_btn = st.sidebar.button("🔍 불러오기", use_container_width=True, type="primary")
+
+# ── 메인 헤더 ──────────────────────────────────
+st.title("💄 Slam-Global KOC 뷰어")
+st.caption("영상 URL이 있는 데이터만 표시 · 썸네일은 수집되는 대로 자동 채워집니다")
+
+# ── 불러오기 실행 ──────────────────────────────
+if load_btn:
+    with st.spinner("데이터 불러오는 중..."):
+        try:
+            df = fetch_source(source_key)
+            st.session_state["df"] = df
+            st.session_state["src"] = source_key
+        except Exception as e:
+            st.error(f"오류: {e}")
+            st.session_state["df"] = pd.DataFrame()
+
+# ── 결과 ───────────────────────────────────────
+if "df" in st.session_state and not st.session_state["df"].empty:
+    df = st.session_state["df"].copy()
+
+    if metric_labels and min_val > 0 and metric_labels[0] in df:
+        df = df[df[metric_labels[0]] >= min_val]
+    if sort_label and sort_label in df:
+        df = df.sort_values(sort_label, ascending=not sort_desc)
     df = df.reset_index(drop=True)
 
-    # 상단 메트릭
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("필터 결과", f"{len(df)}개")
-    c2.metric("전체 로드", f"{len(raw)}개")
-    c3.metric("플랫폼", st.session_state.get('platform', '전체'))
-    c4.metric("정렬", f"{'↓' if sort_desc else '↑'} {RENAME_MAP.get(sort_col, sort_col)}")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("표시 결과", f"{len(df):,}개")
+    c2.metric("소스", st.session_state["src"].split(" (")[0])
+    has_thumb = int(df["썸네일"].notna().sum()) if "썸네일" in df else 0
+    c3.metric("썸네일 보유", f"{has_thumb:,}개")
 
+    view = st.radio(
+        "보기 방식", ["📋 리스트 (빠름)", "🖼️ 썸네일"], horizontal=True, label_visibility="collapsed"
+    )
     st.markdown("---")
 
-    tab1, tab2 = st.tabs(["📋 테이블 뷰", "🃏 카드 뷰"])
+    if view.startswith("📋"):
+        col_cfg = {
+            "영상URL": st.column_config.LinkColumn("▶️ 영상", display_text="보기"),
+        }
+        if "썸네일" in df:
+            col_cfg["썸네일"] = st.column_config.ImageColumn("썸네일", width="small")
+        st.dataframe(df, use_container_width=True, height=620, column_config=col_cfg)
 
-    with tab1:
-        # 액션 컬럼 추가
-        df_display = df.rename(columns={k: v for k, v in RENAME_MAP.items() if k in df.columns}).copy()
+    else:
+        PER_PAGE = 60
+        total_pages = max(1, math.ceil(len(df) / PER_PAGE))
+        page = st.number_input("페이지", 1, total_pages, 1, label_visibility="collapsed")
+        chunk = df.iloc[(page - 1) * PER_PAGE : page * PER_PAGE].to_dict("records")
+        st.caption(f"페이지 {page}/{total_pages} · {len(df):,}개 중 {len(chunk)}개 표시")
 
-        # 승인/거절/재생 컬럼
-        df_display['액션'] = '✅ ❌ ▶️'
-
-        # TikTok URL 클릭 가능하게
-        st.dataframe(
-            df_display,
-            use_container_width=True,
-            height=600,
-            column_config={
-                "TikTok URL": st.column_config.LinkColumn("🎵 TikTok", display_text="▶️ 보기"),
-                "Instagram URL": st.column_config.LinkColumn("📸 Instagram", display_text="▶️ 보기"),
-                "액션": st.column_config.TextColumn("액션", width="small"),
-            }
-        )
-
-        # 승인/거절 버튼 (선택된 인플루언서용)
-        st.markdown("---")
-        st.markdown("**개별 액션** — ID 입력 후 처리")
-        col_a, col_b, col_c = st.columns(3)
-        selected_id = st.text_input("influencer_ID 입력", placeholder="예: fanny.gla")
-        btn_col1, btn_col2, btn_col3 = st.columns(3)
-        with btn_col1:
-            if st.button("✅ 승인", use_container_width=True):
-                if selected_id:
-                    if 'approved' not in st.session_state:
-                        st.session_state['approved'] = []
-                    st.session_state['approved'].append(selected_id)
-                    st.success(f"✅ {selected_id} 승인됨!")
-        with btn_col2:
-            if st.button("❌ 거절", use_container_width=True):
-                if selected_id:
-                    if 'rejected' not in st.session_state:
-                        st.session_state['rejected'] = []
-                    st.session_state['rejected'].append(selected_id)
-                    st.error(f"❌ {selected_id} 거절됨!")
-        with btn_col3:
-            if st.button("📋 목록 보기", use_container_width=True):
-                approved = st.session_state.get('approved', [])
-                rejected = st.session_state.get('rejected', [])
-                st.write(f"✅ 승인: {approved}")
-                st.write(f"❌ 거절: {rejected}")
-
-    with tab2:
-        cols = st.columns(3)
-        for i, row in enumerate(df.head(100).to_dict('records')):
-            with cols[i % 3]:
+        cols = st.columns(5)
+        for i, row in enumerate(chunk):
+            with cols[i % 5]:
                 with st.container(border=True):
-                    st.markdown(f"**@{row.get('influencer_ID', 'N/A')}**")
-                    st.caption(f"📱 {row.get('platform', 'N/A')}")
-                    st.markdown(f"👀 조회수 `{row.get('views', 'N/A')}`")
-                    st.markdown(f"❤️ 좋아요 `{row.get('likes', 'N/A')}`")
-                    st.markdown(f"🔖 저장 `{row.get('saves', 'N/A')}`")
-                    tt = row.get('VideoUrl_TT', '')
-                    ig = row.get('VideoUrl_IG', '')
-                    if tt:
-                        st.markdown(f"[▶️ TikTok 보기]({tt})")
-                    if ig:
-                        st.markdown(f"[▶️ Instagram 보기]({ig})")
+                    thumb = row.get("썸네일")
+                    if isinstance(thumb, str) and thumb.startswith("http"):
+                        st.image(thumb, use_container_width=True)
+                    else:
+                        st.markdown(
+                            "<div style='aspect-ratio:9/16;background:#f0f0f3;border-radius:8px;"
+                            "display:flex;align-items:center;justify-content:center;"
+                            "color:#aaa;font-size:28px;'>🎬</div>",
+                            unsafe_allow_html=True,
+                        )
+                    st.markdown(f"**@{row['인플루언서']}**")
+                    if metric_labels:
+                        m = metric_labels[0]
+                        st.caption(f"{m} {row.get(m, 0):,}")
+                    st.markdown(f"[▶️ 영상 보기]({row['영상URL']})")
 
 else:
-    st.markdown("---")
-    st.info("👈 왼쪽 필터 설정 후 검색 버튼을 눌러주세요.")
-    st.markdown("""
-    **사용 방법**
-    1. 플랫폼 선택
-    2. 좋아요 / 조회수 / 저장 최솟값 설정
-    3. 정렬 기준 선택
-    4. 검색 버튼 클릭
-    """)
+    st.info("👈 왼쪽에서 데이터 소스를 고르고 **불러오기**를 눌러주세요.")
+    st.markdown(
+        """
+        **사용법**
+        1. 데이터 소스 선택 (미국 KOC 영상 / 일본 / TOP 영상 등)
+        2. 정렬·최소값 설정 (선택)
+        3. 불러오기 → 리스트로 빠르게 확인, 필요하면 썸네일 보기로 전환
+        """
+    )
